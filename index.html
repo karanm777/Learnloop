@@ -1149,7 +1149,7 @@ async function saveAttempt(userId,displayName,chapterId,levelIndex,score,total,x
   }catch(e){}
 }
 async function fetchAllAttempts(){
-  const out=[];const seen=new Set();
+  const out = []; const seen = new Set();
   try {
     const remoteKeys = await CloudAuthSync.listRemoteKeys('attempt:');
     for (const k of remoteKeys) {
@@ -1163,18 +1163,49 @@ async function fetchAllAttempts(){
       }
     }
   } catch(e){}
-  const out=[];const seen=new Set();
+
   /* 1. Try platform storage */
-  const keys=await listShared('attempt:');
-  for(const k of keys){const v=await getShared(k);if(v){try{const r=normalizeAttempt(JSON.parse(v));const id=`${r.userId}:${r.ts}`;if(!seen.has(id)){out.push(r);seen.add(id);}}catch(e){}}}
+  try {
+    const keys = await listShared('attempt:');
+    for (const k of keys) {
+      const v = await getShared(k);
+      if (v) {
+        try {
+          const r = normalizeAttempt(JSON.parse(v));
+          const id = `${r.userId}:${r.ts}`;
+          if (!seen.has(id)) { out.push(r); seen.add(id); }
+        } catch(e){}
+      }
+    }
+  } catch(e){}
+
   /* 2. Merge localStorage (fallback / offline / regular browser) */
-  try{
-    /* a. Use the maintained index */
-    const idx=JSON.parse(localStorage.getItem('canopy_attempt_keys')||'[]');
-    for(const k of idx){const v=localStorage.getItem(k);if(v){try{const r=normalizeAttempt(JSON.parse(v));const id=`${r.userId}:${r.ts}`;if(!seen.has(id)){out.push(r);seen.add(id);}}catch(e){}}}
-    /* b. Full scan for any attempt: keys not in the index (backward-compatibility) */
-    for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('attempt:')){const v=localStorage.getItem(k);if(v){try{const r=normalizeAttempt(JSON.parse(v));const id=`${r.userId}:${r.ts}`;if(!seen.has(id)){out.push(r);seen.add(id);}}catch(e){}}}}
-  }catch(e){}
+  try {
+    const idx = JSON.parse(localStorage.getItem('canopy_attempt_keys') || '[]');
+    for (const k of idx) {
+      const v = localStorage.getItem(k);
+      if (v) {
+        try {
+          const r = normalizeAttempt(JSON.parse(v));
+          const id = `${r.userId}:${r.ts}`;
+          if (!seen.has(id)) { out.push(r); seen.add(id); }
+        } catch(e){}
+      }
+    }
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('attempt:')) {
+        const v = localStorage.getItem(k);
+        if (v) {
+          try {
+            const r = normalizeAttempt(JSON.parse(v));
+            const id = `${r.userId}:${r.ts}`;
+            if (!seen.has(id)) { out.push(r); seen.add(id); }
+          } catch(e){}
+        }
+      }
+    }
+  } catch(e){}
   return out;
 }
 
@@ -2999,7 +3030,7 @@ function renderLogin(){
   document.getElementById('authSwitch').onclick=()=>{_authMode=isReg?'signin':'register';renderLogin();};
   if(!isReg) document.getElementById('adminPortalLink').onclick=()=>{_authMode='admin_login';renderLogin();};
   
-  const go=()=>{
+  const go=async ()=>{
     errEl.style.display='none';
     const idVal=iInput.value.trim();
     if(!idVal)return showError("Please enter your phone number or email.");
