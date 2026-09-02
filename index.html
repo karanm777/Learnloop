@@ -1,6 +1,7 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
 <head>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Learn Loop — Life Sciences Quiz</title>
@@ -880,6 +881,13 @@ setInterval(updateClock,15000);
 // CLOUD AUTHENTICATION & REMOTE DATABASE ENGINE (Cross-Device Sync)
 // Stores accounts, profile, grade, board, XP & progress remotely in Cloud DB
 // ======================================================================
+// Initialize Supabase Client if credentials are provided
+window.SUPABASE_URL = window.SUPABASE_URL || '';
+window.SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || '';
+if (window.supabase && window.supabase.createClient && window.SUPABASE_URL && window.SUPABASE_ANON_KEY) {
+  try { window.supabaseClient = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY); } catch(e){}
+}
+
 const CloudAuthSync = {
   baseUrl: 'https://learnloop-db-default-rtdb.firebaseio.com',
 
