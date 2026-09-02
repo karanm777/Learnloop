@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Learn Loop — Life Sciences Quiz</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -76,16 +76,45 @@
   .theme-btn{flex:1;padding:10px 12px;border-radius:14px;font-family:'Space Grotesk',sans-serif;font-size:12.5px;font-weight:700;color:var(--muted);background:var(--surface-2);border:1.5px solid var(--border);transition:all .2s ease;cursor:pointer;}
   .theme-btn.active{background:var(--primary);color:#ffffff;border-color:var(--primary);box-shadow:0 4px 14px rgba(79,70,229,0.35);}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-  html,body{margin:0;padding:0;height:100%;}
-  body{font-family:'Inter',sans-serif;background:radial-gradient(ellipse at 20% 10%,rgba(99,102,241,0.35),transparent 45%),radial-gradient(ellipse at 80% 90%,rgba(245,158,11,0.22),transparent 45%),linear-gradient(135deg,#0F172A 0%,#1E1B4B 50%,#0F172A 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px 14px;color:var(--ink);}
+  html,body{margin:0;padding:0;height:100%;height:100dvh;width:100%;overflow:hidden;}
+  body{font-family:'Inter',sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;}
   h1,h2,h3{font-family:'Space Grotesk',sans-serif;margin:0;color:var(--ink);}
   button{font-family:'Space Grotesk',sans-serif;cursor:pointer;border:none;background:none;color:inherit;}
   .mono{font-family:'JetBrains Mono',monospace;}
-  .phone{width:390px;max-width:100%;height:815px;max-height:92vh;background:var(--surface);border-radius:46px;box-shadow:0 0 0 10px #1E293B,0 0 0 12px #334155,0 35px 80px rgba(0,0,0,.65);overflow:hidden;position:relative;display:flex;flex-direction:column;}
-  .statusbar{height:46px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 26px;background:transparent;position:relative;z-index:20;}
-  .statusbar .time{font-family:'Space Grotesk';font-weight:700;font-size:14px;color:var(--ink);}
-  .statusbar .icons{display:flex;align-items:center;gap:5px;}
-  .notch{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:120px;height:26px;background:#0F172A;border-radius:16px;z-index:30;}
+
+  /* DESKTOP PREVIEW FRAME (default for >600px) */
+  @media (min-width: 601px) {
+    body{
+      background:radial-gradient(ellipse at 20% 10%,rgba(99,102,241,0.35),transparent 45%),radial-gradient(ellipse at 80% 90%,rgba(245,158,11,0.22),transparent 45%),linear-gradient(135deg,#0F172A 0%,#1E1B4B 50%,#0F172A 100%);
+      min-height:100vh;display:flex;align-items:center;justify-content:center;padding:28px 14px;
+    }
+    .phone{
+      width:390px;max-width:100%;height:815px;max-height:92vh;background:var(--surface);border-radius:46px;box-shadow:0 0 0 10px #1E293B,0 0 0 12px #334155,0 35px 80px rgba(0,0,0,.65);overflow:hidden;position:relative;display:flex;flex-direction:column;
+    }
+    .statusbar{height:46px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 26px;background:transparent;position:relative;z-index:20;}
+    .statusbar .time{font-family:'Space Grotesk';font-weight:700;font-size:14px;color:var(--ink);}
+    .statusbar .icons{display:flex;align-items:center;gap:5px;}
+    .notch{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:120px;height:26px;background:#0F172A;border-radius:16px;z-index:30;display:block;}
+    .home-indicator{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:134px;height:5px;background:#0F172A;border-radius:3px;opacity:.85;z-index:30;display:block;}
+  }
+
+  /* MOBILE NATIVE (100% Edge-to-Edge on real mobile devices / max-width: 600px) */
+  @media (max-width: 600px) {
+    body{
+      background:var(--screen-bg);padding:0 !important;margin:0 !important;display:block;min-height:100vh;min-height:100dvh;
+    }
+    .phone{
+      width:100% !important;max-width:100% !important;height:100vh !important;height:100dvh !important;max-height:100% !important;border-radius:0 !important;box-shadow:none !important;border:none !important;margin:0 !important;position:absolute;inset:0;display:flex;flex-direction:column;
+    }
+    .statusbar, .notch, .home-indicator{
+      display:none !important;
+    }
+    .tabbar{
+      padding-bottom:max(14px, env(safe-area-inset-bottom)) !important;
+      height:calc(64px + max(14px, env(safe-area-inset-bottom))) !important;
+    }
+  }
+
   .screen-stack{flex:1;position:relative;overflow:hidden;}
   .screen{position:absolute;inset:0;overflow-y:auto;-ms-overflow-style:none;scrollbar-width:none;background:var(--screen-bg);}
   .screen::-webkit-scrollbar{display:none;}
@@ -98,7 +127,6 @@
   .tab-item.active svg{stroke:var(--primary);transform:scale(1.1);}
   .tab-item.active span{color:var(--primary);}
   .tab-item.active{background:var(--tab-active-bg);box-shadow:0 2px 8px rgba(79,70,229,0.12);}
-  .home-indicator{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:134px;height:5px;background:#0F172A;border-radius:3px;opacity:.85;z-index:30;}
   .px{padding-left:22px;padding-right:22px;}
   .topbar{display:flex;align-items:center;gap:12px;padding:12px 22px 8px;background:var(--topbar-bg);backdrop-filter:blur(12px);position:sticky;top:0;z-index:15;}
   .topbar h2{font-size:20px;font-weight:700;letter-spacing:-.3px;color:var(--ink);}
@@ -848,6 +876,150 @@ function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t
 function updateClock(){const el=document.getElementById('clockTime');if(!el)return;const d=new Date();let h=d.getHours(),m=d.getMinutes();h=h%12;if(h===0)h=12;el.textContent=`${h}:${m<10?'0':''}${m}`;}
 setInterval(updateClock,15000);
 
+// ======================================================================
+// CLOUD AUTHENTICATION & REMOTE DATABASE ENGINE (Cross-Device Sync)
+// Stores accounts, profile, grade, board, XP & progress remotely in Cloud DB
+// ======================================================================
+const CloudAuthSync = {
+  baseUrl: 'https://learnloop-db-default-rtdb.firebaseio.com',
+
+  async setRemoteKey(key, valueStr) {
+    try {
+      const cleanKey = String(key || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const url = `${this.baseUrl}/kv/${cleanKey}.json`;
+      await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: valueStr, updated: Date.now() })
+      });
+    } catch(e) {
+      try { if (window.storage && window.storage.set) await window.storage.set(key, valueStr, true); } catch(err){}
+    }
+  },
+
+  async getRemoteKey(key) {
+    try {
+      const cleanKey = String(key || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const url = `${this.baseUrl}/kv/${cleanKey}.json`;
+      const res = await fetch(url, { method: 'GET' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.value != null) return data.value;
+      }
+    } catch(e) {
+      try { if (window.storage && window.storage.get) { const r = await window.storage.get(key, true); if(r && r.value) return r.value; } } catch(err){}
+    }
+    return null;
+  },
+
+  async listRemoteKeys(prefix) {
+    const keys = [];
+    try {
+      const url = `${this.baseUrl}/kv.json?shallow=true`;
+      const res = await fetch(url, { method: 'GET' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && typeof data === 'object') {
+          const cleanPrefix = String(prefix || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
+          Object.keys(data).forEach(k => {
+            if (k.startsWith(cleanPrefix)) keys.push(k);
+          });
+        }
+      }
+    } catch(e) {}
+    return keys;
+  },
+
+  async saveAccount(account) {
+    if (!account || !account.loginId) return;
+    const normId = normLoginId(account.loginId);
+
+    // 1. Update local storage
+    const arr = getAccounts();
+    const idx = arr.findIndex(a => normLoginId(a.loginId) === normId || a.userId === account.userId);
+    if (idx >= 0) arr[idx] = { ...arr[idx], ...account };
+    else arr.push(account);
+    saveAccounts(arr);
+
+    // 2. Sync to Cloud Remote DB
+    const jsonStr = JSON.stringify(account);
+    await this.setRemoteKey(`acct_login_${normId}`, jsonStr);
+    await this.setRemoteKey(`acct_user_${account.userId}`, jsonStr);
+
+    try {
+      const cloudAccountsStr = (await this.getRemoteKey('all_accounts')) || '[]';
+      let cloudArr = [];
+      try { cloudArr = JSON.parse(cloudAccountsStr); } catch(e){}
+      const cIdx = cloudArr.findIndex(a => normLoginId(a.loginId) === normId);
+      if (cIdx >= 0) cloudArr[cIdx] = account;
+      else cloudArr.push(account);
+      await this.setRemoteKey('all_accounts', JSON.stringify(cloudArr));
+    } catch(e){}
+  },
+
+  async fetchAccount(loginId) {
+    if (!loginId) return null;
+    const normId = normLoginId(loginId);
+
+    // 1. Check local cache
+    let local = getAccounts().find(a => normLoginId(a.loginId) === normId);
+    if (local) return local;
+
+    // 2. Fetch from Cloud DB by login key
+    try {
+      const remoteStr = await this.getRemoteKey(`acct_login_${normId}`);
+      if (remoteStr) {
+        const remote = JSON.parse(remoteStr);
+        if (remote && remote.userId) {
+          const arr = getAccounts();
+          if (!arr.find(a => a.userId === remote.userId)) {
+            arr.push(remote);
+            saveAccounts(arr);
+          }
+          return remote;
+        }
+      }
+    } catch(e){}
+
+    // 3. Fallback: Search all_accounts in cloud
+    try {
+      const allStr = await this.getRemoteKey('all_accounts');
+      if (allStr) {
+        const cloudArr = JSON.parse(allStr);
+        const matched = cloudArr.find(a => normLoginId(a.loginId) === normId);
+        if (matched) {
+          const arr = getAccounts();
+          if (!arr.find(a => a.userId === matched.userId)) {
+            arr.push(matched);
+            saveAccounts(arr);
+          }
+          return matched;
+        }
+      }
+    } catch(e){}
+
+    return null;
+  },
+
+  async syncUserData(userId) {
+    if (!userId) return;
+    try {
+      const progressKeys = await this.listRemoteKeys(`lvlprog_${userId}_`);
+      for (const pk of progressKeys) {
+        const raw = await this.getRemoteKey(pk);
+        if (raw) {
+          try {
+            const keyParts = pk.split('_');
+            const chapterId = keyParts[keyParts.length - 1];
+            const localKey = `lvlprog:${userId}:${chapterId}`;
+            localStorage.setItem(localKey, raw);
+          } catch(e){}
+        }
+      }
+    } catch(e){}
+  }
+};
+
 async function getPersonal(key){try{const r=await window.storage.get(key,false);if(r&&r.value!=null)return r.value;}catch(e){}try{return localStorage.getItem('personal:'+key);}catch(e){return null;}}
 async function setPersonal(key,value){try{await window.storage.set(key,value,false);}catch(e){}try{localStorage.setItem('personal:'+key,value);}catch(e){}}
 async function setShared(key,value){try{await window.storage.set(key,value,true);}catch(e){}}
@@ -869,13 +1041,22 @@ function normLoginId(s){
 }
 function getAccounts(){try{return JSON.parse(localStorage.getItem('canopy_accounts')||'[]');}catch(e){return[];}}
 function saveAccounts(arr){try{localStorage.setItem('canopy_accounts',JSON.stringify(arr));}catch(e){}}
-function findAccountByLoginId(loginId){const n=normLoginId(loginId);return getAccounts().find(a=>normLoginId(a.loginId)===n)||null;}
+async function findAccountByLoginId(loginId){
+  const n=normLoginId(loginId);
+  let acct = getAccounts().find(a=>normLoginId(a.loginId)===n);
+  if(acct) return acct;
+  try {
+    const remote = await CloudAuthSync.fetchAccount(n);
+    if(remote) return remote;
+  } catch(e){}
+  return null;
+}
 function findAccountByUserId(uid){return getAccounts().find(a=>a.userId===uid)||null;}
 function createAccount(displayName,loginId,grade,board,school,role='student'){
   const arr=getAccounts(),n=normLoginId(loginId);
   if(arr.find(a=>normLoginId(a.loginId)===n))return null;/*loginId already taken*/
   const acct={userId:generateUserId(),displayName:(displayName||'').trim(),loginId:n,role,grade:grade||'',board:board||'',school:(school||'').trim(),createdAt:Date.now()};
-  arr.push(acct);saveAccounts(arr);return acct;
+  arr.push(acct);saveAccounts(arr);try{CloudAuthSync.saveAccount(acct);}catch(e){}return acct;
 }
 function updateAccount(userId, grade, board, school) {
   const arr=getAccounts();
@@ -958,6 +1139,7 @@ async function saveAttempt(userId,displayName,chapterId,levelIndex,score,total,x
   const record=JSON.stringify({userId,displayName,grade:state.grade,subject:state.subject,cat:chapterId,level:levelIndex,score,total,xp:xpEarned,ts:now});
   /* Primary: platform storage (shared/multi-user) */
   await setShared(key,record);
+  try{await CloudAuthSync.setRemoteKey(key,record);}catch(e){}
   /* Fallback: localStorage (persists across refresh/close in any browser) */
   try{
     localStorage.setItem(key,record);
@@ -967,6 +1149,20 @@ async function saveAttempt(userId,displayName,chapterId,levelIndex,score,total,x
   }catch(e){}
 }
 async function fetchAllAttempts(){
+  const out=[];const seen=new Set();
+  try {
+    const remoteKeys = await CloudAuthSync.listRemoteKeys('attempt:');
+    for (const k of remoteKeys) {
+      const v = await CloudAuthSync.getRemoteKey(k);
+      if (v) {
+        try {
+          const r = normalizeAttempt(JSON.parse(v));
+          const id = `${r.userId}:${r.ts}`;
+          if (!seen.has(id)) { out.push(r); seen.add(id); }
+        } catch(e){}
+      }
+    }
+  } catch(e){}
   const out=[];const seen=new Set();
   /* 1. Try platform storage */
   const keys=await listShared('attempt:');
@@ -996,6 +1192,10 @@ async function loadLevelProgress(chapterId){
   try{const raw=localStorage.getItem(newKey);if(raw)return JSON.parse(raw);}catch(e){}
   try{const r=await window.storage.get(legacyKey,false);if(r&&r.value)return JSON.parse(r.value);}catch(e){}
   try{const raw=localStorage.getItem(legacyKey);if(raw)return JSON.parse(raw);}catch(e){}
+  try{
+    const cloudRaw = await CloudAuthSync.getRemoteKey(`lvlprog_${state.userId}_${chapterId}`);
+    if(cloudRaw) return JSON.parse(cloudRaw);
+  }catch(e){}
   return{completedLevels:[],bestScores:{}};
 }
 async function saveLevelProgress(chapterId,progress){
@@ -1003,6 +1203,7 @@ async function saveLevelProgress(chapterId,progress){
   const data = JSON.stringify(progress);
   try{await window.storage.set(newKey,data,false);}catch(e){}
   try{localStorage.setItem(newKey,data);}catch(e){}
+  try{await CloudAuthSync.setRemoteKey(`lvlprog_${state.userId}_${chapterId}`, data);}catch(e){}
 }
 
 /* Calculate student rank within their Grade+Board group */
@@ -2816,7 +3017,8 @@ function renderLogin(){
       parsedId=digits;
     }
 
-    let acct=findAccountByLoginId(parsedId);
+    let acct=await findAccountByLoginId(parsedId);
+    if(acct) try{await CloudAuthSync.syncUserData(acct.userId);}catch(e){}
     if(isReg){
       const nameVal=nInput.value.trim();
       if(!nameVal)return showError("Please enter your name.");
