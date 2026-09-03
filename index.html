@@ -900,68 +900,125 @@ if (window.supabase && window.supabase.createClient && window.SUPABASE_URL && wi
 }
 
 const CloudAuthSync = {
-  baseUrl: 'https://ntfy.sh',
+  // Master Cloud Database Registry for LearnLoop (Global Persistent Cross-Device Storage)
+  registryUrl: 'https://api.restful-api.dev/objects/ff808181a067127101a068678ccd049a',
+  fallbackBaseUrl: 'https://ntfy.sh',
 
+  // Clean topic helper for secondary sync
   cleanTopic(key) {
     return 'llp_' + String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
   },
 
-  async setRemoteKey(key, valueStr) {
-    const topic = this.cleanTopic(key);
+  // In-memory cache of cloud registry to avoid duplicate network fetches
+  _cloudCache: null,
+  _lastFetchTime: 0,
+
+  async fetchMasterRegistry(force = false) {
+    const now = Date.now();
+    if (!force && this._cloudCache && (now - this._lastFetchTime < 4000)) {
+      return this._cloudCache;
+    }
+
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(this.registryUrl, { method: 'GET', signal: controller.signal });
+      clearTimeout(timeoutId);
 
-      await fetch(`${this.baseUrl}/${topic}`, {
-        method: 'POST',
-        headers: { 'Title': 'Sync', 'Priority': '1' },
-        body: valueStr,
+      if (res.ok) {
+        const json = await res.json();
+        if (json && json.data && json.data.registry) {
+          this._cloudCache = json.data.registry;
+          this._lastFetchTime = now;
+          return this._cloudCache;
+        }
+      }
+    } catch(e) {
+      console.warn('Cloud registry read error:', e);
+    }
+
+    return this._cloudCache || {};
+  },
+
+  async updateMasterRegistry(updaterFn) {
+    try {
+      const currentRegistry = await this.fetchMasterRegistry(true);
+      const updatedRegistry = updaterFn(currentRegistry || {}) || currentRegistry;
+      this._cloudCache = updatedRegistry;
+      this._lastFetchTime = Date.now();
+
+      const payload = {
+        name: 'LearnLoop_Global_Registry_v1',
+        data: { registry: updatedRegistry, lastUpdated: Date.now() }
+      };
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4500);
+      await fetch(this.registryUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
         signal: controller.signal
       });
       clearTimeout(timeoutId);
     } catch(e) {
-      try { if (window.storage && window.storage.set) await window.storage.set(key, valueStr, true); } catch(err){}
+      console.warn('Cloud registry update error:', e);
     }
   },
 
-  async getRemoteKey(key) {
-    const topic = this.cleanTopic(key);
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
+  async setRemoteKey(key, valueStr) {
+    const cleanKey = String(key || '').toLowerCase().trim();
+    // 1. Update Master Cloud Registry
+    await this.updateMasterRegistry(reg => {
+      reg['kv_' + cleanKey] = { value: valueStr, updated: Date.now() };
+      return reg;
+    });
 
-      const res = await fetch(`${this.baseUrl}/${topic}/json?poll=1`, {
-        method: 'GET',
+    // 2. Secondary redundant sync channel
+    try {
+      const topic = this.cleanTopic(key);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      await fetch(`${this.fallbackBaseUrl}/${topic}`, {
+        method: 'POST',
+        headers: { 'Title': 'Sync' },
+        body: valueStr,
         signal: controller.signal
       });
       clearTimeout(timeoutId);
+    } catch(err){}
+  },
 
+  async getRemoteKey(key) {
+    const cleanKey = String(key || '').toLowerCase().trim();
+    // 1. Try Master Cloud Registry
+    try {
+      const reg = await this.fetchMasterRegistry();
+      if (reg && reg['kv_' + cleanKey] && reg['kv_' + cleanKey].value != null) {
+        return reg['kv_' + cleanKey].value;
+      }
+    } catch(e){}
+
+    // 2. Secondary redundant sync channel
+    try {
+      const topic = this.cleanTopic(key);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(`${this.fallbackBaseUrl}/${topic}/json?poll=1`, { method: 'GET', signal: controller.signal });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const text = await res.text();
         const lines = text.split('\n').filter(l => l.trim().length > 0);
         for (let i = lines.length - 1; i >= 0; i--) {
           try {
             const obj = JSON.parse(lines[i]);
-            if (obj && obj.event === 'message' && obj.message != null) {
-              return obj.message;
-            }
+            if (obj && obj.event === 'message' && obj.message != null) return obj.message;
           } catch(err){}
         }
       }
-    } catch(e) {}
-
-    try {
-      if (window.storage && window.storage.get) {
-        const r = await window.storage.get(key, true);
-        if (r && r.value != null) return r.value;
-      }
-    } catch(err){}
+    } catch(e){}
 
     return null;
-  },
-
-  async listRemoteKeys(prefix) {
-    return [];
   },
 
   // ==================================================================
@@ -979,12 +1036,14 @@ const CloudAuthSync = {
     else arr.push(account);
     saveAccounts(arr);
 
-    // 2. Save account record remotely to Cloud DB
-    const jsonStr = JSON.stringify(account);
-    await this.setRemoteKey(`acct_login_${normId}`, jsonStr);
-    await this.setRemoteKey(`acct_user_${account.userId}`, jsonStr);
+    // 2. Save into Master Cloud Registry
+    await this.updateMasterRegistry(reg => {
+      reg['acct_' + normId] = account;
+      reg['acct_uid_' + account.userId] = account;
+      return reg;
+    });
 
-    // Also push complete user state bundle
+    // Also push complete user state bundle to cloud
     await this.pushUserState(account.userId, normId);
   },
 
@@ -992,7 +1051,23 @@ const CloudAuthSync = {
     if (!loginId) return null;
     const normId = normLoginId(loginId);
 
-    // 1. Try Cloud DB Remote Store FIRST for latest authoritative account data
+    // 1. Query Master Cloud Database FIRST (Authoritative)
+    try {
+      const reg = await this.fetchMasterRegistry(true);
+      if (reg && reg['acct_' + normId]) {
+        const remote = reg['acct_' + normId];
+        if (remote && remote.userId) {
+          const arr = getAccounts();
+          const idx = arr.findIndex(a => normLoginId(a.loginId) === normId || a.userId === remote.userId);
+          if (idx >= 0) arr[idx] = { ...arr[idx], ...remote };
+          else arr.push(remote);
+          saveAccounts(arr);
+          return remote;
+        }
+      }
+    } catch(e){}
+
+    // 2. Fallback to secondary getRemoteKey
     try {
       const remoteStr = await this.getRemoteKey(`acct_login_${normId}`);
       if (remoteStr) {
@@ -1008,7 +1083,7 @@ const CloudAuthSync = {
       }
     } catch(e){}
 
-    // 2. Local Cache Fallback
+    // 3. Local Cache Fallback
     let local = getAccounts().find(a => normLoginId(a.loginId) === normId);
     return local || null;
   },
@@ -1041,9 +1116,17 @@ const CloudAuthSync = {
         updatedAt: Date.now()
       };
 
+      // 1. Save directly into Master Cloud Registry
+      await this.updateMasterRegistry(reg => {
+        reg['ubundle_' + userId] = userBundle;
+        if (normId) reg['ubundle_' + normId] = userBundle;
+        return reg;
+      });
+
+      // 2. Secondary redundant key-value backup
       const bundleStr = JSON.stringify(userBundle);
-      await this.setRemoteKey(`ubundle_${userId}`, bundleStr);
-      if (normId) await this.setRemoteKey(`ubundle_login_${normId}`, bundleStr);
+      this.setRemoteKey(`ubundle_${userId}`, bundleStr).catch(() => {});
+      if (normId) this.setRemoteKey(`ubundle_login_${normId}`, bundleStr).catch(() => {});
     } catch(e) {
       console.warn('Error pushing user state to cloud:', e);
     }
@@ -1054,67 +1137,77 @@ const CloudAuthSync = {
     const normId = loginId ? normLoginId(loginId) : '';
 
     try {
-      // 1. Fetch remote user bundle by userId or loginId
-      let remoteBundleStr = userId ? await this.getRemoteKey(`ubundle_${userId}`) : null;
-      if (!remoteBundleStr && normId) {
-        remoteBundleStr = await this.getRemoteKey(`ubundle_login_${normId}`);
+      // 1. Fetch from Master Cloud Database (Authoritative)
+      let bundle = null;
+      const reg = await this.fetchMasterRegistry(true);
+      if (reg) {
+        if (normId && reg['ubundle_' + normId]) bundle = reg['ubundle_' + normId];
+        else if (userId && reg['ubundle_' + userId]) bundle = reg['ubundle_' + userId];
       }
 
-      if (remoteBundleStr) {
-        const bundle = JSON.parse(remoteBundleStr);
-        if (bundle) {
-          // Restore Account Profile
-          if (bundle.account && bundle.account.userId) {
-            const arr = getAccounts();
-            const idx = arr.findIndex(a => a.userId === bundle.account.userId || normLoginId(a.loginId) === normLoginId(bundle.account.loginId));
-            if (idx >= 0) arr[idx] = { ...arr[idx], ...bundle.account };
-            else arr.push(bundle.account);
-            saveAccounts(arr);
+      // 2. Secondary backup fallback
+      if (!bundle) {
+        let remoteBundleStr = null;
+        if (normId) remoteBundleStr = await this.getRemoteKey(`ubundle_login_${normId}`);
+        if (!remoteBundleStr && userId) remoteBundleStr = await this.getRemoteKey(`ubundle_${userId}`);
+        if (remoteBundleStr) bundle = JSON.parse(remoteBundleStr);
+      }
 
-            if (state.userId === bundle.account.userId || state.userId === userId) {
-              state.grade = bundle.account.grade || state.grade;
-              state.username = bundle.account.displayName || state.username;
-              setCurrentUser(bundle.account);
-            }
+      if (bundle) {
+        // Restore Account Profile
+        if (bundle.account && bundle.account.userId) {
+          const cleanGrade = typeof normGrade === 'function' ? normGrade(bundle.account.grade || '') : (bundle.account.grade || '');
+          bundle.account.grade = cleanGrade;
+
+          const arr = getAccounts();
+          const idx = arr.findIndex(a => a.userId === bundle.account.userId || normLoginId(a.loginId) === normLoginId(bundle.account.loginId));
+          if (idx >= 0) arr[idx] = { ...arr[idx], ...bundle.account };
+          else arr.push(bundle.account);
+          saveAccounts(arr);
+
+          if (state.userId === bundle.account.userId || state.userId === userId) {
+            state.grade = cleanGrade || state.grade;
+            state.username = bundle.account.displayName || state.username;
+            setCurrentUser(bundle.account);
           }
-
-          // Restore Level Progress
-          if (bundle.levelProgress && typeof bundle.levelProgress === 'object') {
-            Object.entries(bundle.levelProgress).forEach(([k, val]) => {
-              if (k && val) {
-                try {
-                  const existingLocal = localStorage.getItem(k);
-                  if (!existingLocal) {
-                    localStorage.setItem(k, val);
-                  } else {
-                    // Safe merge: take highest completed levels
-                    const localObj = JSON.parse(existingLocal);
-                    const remoteObj = JSON.parse(val);
-                    const mergedLevels = Array.from(new Set([...(localObj.completedLevels||[]), ...(remoteObj.completedLevels||[])]));
-                    const mergedScores = { ...(localObj.bestScores||{}), ...(remoteObj.bestScores||{}) };
-                    localStorage.setItem(k, JSON.stringify({ completedLevels: mergedLevels, bestScores: mergedScores }));
-                  }
-                } catch(err){}
-              }
-            });
-          }
-
-          // Restore Quiz Attempts
-          if (Array.isArray(bundle.attempts)) {
-            const idx = JSON.parse(localStorage.getItem('canopy_attempt_keys') || '[]');
-            bundle.attempts.forEach(att => {
-              if (att && att.ts) {
-                const key = `attempt:${att.userId}:${att.ts}`;
-                const rec = JSON.stringify(att);
-                localStorage.setItem(key, rec);
-                if (!idx.includes(key)) idx.push(key);
-              }
-            });
-            localStorage.setItem('canopy_attempt_keys', JSON.stringify(idx));
-          }
-
-          return bundle;
         }
+
+        // Restore Level Progress
+        if (bundle.levelProgress && typeof bundle.levelProgress === 'object') {
+          Object.entries(bundle.levelProgress).forEach(([k, val]) => {
+            if (k && val) {
+              try {
+                const existingLocal = localStorage.getItem(k);
+                if (!existingLocal) {
+                  localStorage.setItem(k, val);
+                } else {
+                  // Safe merge: take highest completed levels and best scores
+                  const localObj = JSON.parse(existingLocal);
+                  const remoteObj = JSON.parse(val);
+                  const mergedLevels = Array.from(new Set([...(localObj.completedLevels||[]), ...(remoteObj.completedLevels||[])]));
+                  const mergedScores = { ...(localObj.bestScores||{}), ...(remoteObj.bestScores||{}) };
+                  localStorage.setItem(k, JSON.stringify({ completedLevels: mergedLevels, bestScores: mergedScores }));
+                }
+              } catch(err){}
+            }
+          });
+        }
+
+        // Restore Quiz Attempts
+        if (Array.isArray(bundle.attempts)) {
+          const idx = JSON.parse(localStorage.getItem('canopy_attempt_keys') || '[]');
+          bundle.attempts.forEach(att => {
+            if (att && att.ts) {
+              const key = `attempt:${att.userId}:${att.ts}`;
+              const rec = JSON.stringify(att);
+              localStorage.setItem(key, rec);
+              if (!idx.includes(key)) idx.push(key);
+            }
+          });
+          localStorage.setItem('canopy_attempt_keys', JSON.stringify(idx));
+        }
+
+        return bundle;
       }
     } catch(e) {
       console.warn('Error hydrating user state from cloud:', e);
