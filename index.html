@@ -889,70 +889,56 @@ if (window.supabase && window.supabase.createClient && window.SUPABASE_URL && wi
 }
 
 const CloudAuthSync = {
-  // Global CORS-enabled Cloud DB Endpoint
-  baseUrl: 'https://api.restful-api.dev/objects',
+  baseUrl: 'https://ntfy.sh',
 
-  // Internal index of remote object IDs for fast lookup
-  getCloudMap() {
-    try { return JSON.parse(localStorage.getItem('canopy_cloud_map') || '{}'); } catch(e){ return {}; }
-  },
-  saveCloudMap(map) {
-    try { localStorage.setItem('canopy_cloud_map', JSON.stringify(map)); } catch(e){}
+  cleanTopic(key) {
+    return 'llp_' + String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '_');
   },
 
   async setRemoteKey(key, valueStr) {
-    const cleanKey = String(key || '').trim().toLowerCase();
-    const payload = { name: cleanKey, data: { key: cleanKey, value: valueStr, updated: Date.now() } };
-    
-    // 1. Check if we already have an objectId for this key
-    const map = this.getCloudMap();
-    const existingId = map[cleanKey];
-
+    const topic = this.cleanTopic(key);
     try {
-      if (existingId) {
-        // Update existing record
-        const res = await fetch(`${this.baseUrl}/${existingId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (res.ok) return;
-      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
 
-      // Create new record
-      const res = await fetch(this.baseUrl, {
+      await fetch(`${this.baseUrl}/${topic}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers: { 'Title': 'Sync', 'Priority': '1' },
+        body: valueStr,
+        signal: controller.signal
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.id) {
-          map[cleanKey] = data.id;
-          this.saveCloudMap(map);
-        }
-      }
+      clearTimeout(timeoutId);
     } catch(e) {
       try { if (window.storage && window.storage.set) await window.storage.set(key, valueStr, true); } catch(err){}
     }
   },
 
   async getRemoteKey(key) {
-    const cleanKey = String(key || '').trim().toLowerCase();
-    const map = this.getCloudMap();
-    const existingId = map[cleanKey];
-
+    const topic = this.cleanTopic(key);
     try {
-      if (existingId) {
-        const res = await fetch(`${this.baseUrl}/${existingId}`, { method: 'GET' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.data && data.data.value != null) return data.data.value;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      const res = await fetch(`${this.baseUrl}/${topic}/json?poll=1`, {
+        method: 'GET',
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const text = await res.text();
+        const lines = text.split('\n').filter(l => l.trim().length > 0);
+        for (let i = lines.length - 1; i >= 0; i--) {
+          try {
+            const obj = JSON.parse(lines[i]);
+            if (obj && obj.event === 'message' && obj.message != null) {
+              return obj.message;
+            }
+          } catch(err){}
         }
       }
     } catch(e) {}
 
-    // Fallback to window.storage if available
     try {
       if (window.storage && window.storage.get) {
         const r = await window.storage.get(key, true);
@@ -964,13 +950,7 @@ const CloudAuthSync = {
   },
 
   async listRemoteKeys(prefix) {
-    const cleanPrefix = String(prefix || '').trim().toLowerCase();
-    const keys = [];
-    const map = this.getCloudMap();
-    Object.keys(map).forEach(k => {
-      if (k.startsWith(cleanPrefix)) keys.push(k);
-    });
-    return keys;
+    return [];
   },
 
   // ==================================================================
