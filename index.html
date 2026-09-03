@@ -889,142 +889,246 @@ if (window.supabase && window.supabase.createClient && window.SUPABASE_URL && wi
 }
 
 const CloudAuthSync = {
-  baseUrl: 'https://learnloop-db-default-rtdb.firebaseio.com',
+  // Global CORS-enabled Cloud DB Endpoint
+  baseUrl: 'https://api.restful-api.dev/objects',
+
+  // Internal index of remote object IDs for fast lookup
+  getCloudMap() {
+    try { return JSON.parse(localStorage.getItem('canopy_cloud_map') || '{}'); } catch(e){ return {}; }
+  },
+  saveCloudMap(map) {
+    try { localStorage.setItem('canopy_cloud_map', JSON.stringify(map)); } catch(e){}
+  },
 
   async setRemoteKey(key, valueStr) {
+    const cleanKey = String(key || '').trim().toLowerCase();
+    const payload = { name: cleanKey, data: { key: cleanKey, value: valueStr, updated: Date.now() } };
+    
+    // 1. Check if we already have an objectId for this key
+    const map = this.getCloudMap();
+    const existingId = map[cleanKey];
+
     try {
-      const cleanKey = String(key || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      const url = `${this.baseUrl}/kv/${cleanKey}.json`;
-      await fetch(url, {
-        method: 'PUT',
+      if (existingId) {
+        // Update existing record
+        const res = await fetch(`${this.baseUrl}/${existingId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.ok) return;
+      }
+
+      // Create new record
+      const res = await fetch(this.baseUrl, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: valueStr, updated: Date.now() })
+        body: JSON.stringify(payload)
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.id) {
+          map[cleanKey] = data.id;
+          this.saveCloudMap(map);
+        }
+      }
     } catch(e) {
       try { if (window.storage && window.storage.set) await window.storage.set(key, valueStr, true); } catch(err){}
     }
   },
 
   async getRemoteKey(key) {
+    const cleanKey = String(key || '').trim().toLowerCase();
+    const map = this.getCloudMap();
+    const existingId = map[cleanKey];
+
     try {
-      const cleanKey = String(key || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
-      const url = `${this.baseUrl}/kv/${cleanKey}.json`;
-      const res = await fetch(url, { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.value != null) return data.value;
+      if (existingId) {
+        const res = await fetch(`${this.baseUrl}/${existingId}`, { method: 'GET' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.data && data.data.value != null) return data.data.value;
+        }
       }
-    } catch(e) {
-      try { if (window.storage && window.storage.get) { const r = await window.storage.get(key, true); if(r && r.value) return r.value; } } catch(err){}
-    }
+    } catch(e) {}
+
+    // Fallback to window.storage if available
+    try {
+      if (window.storage && window.storage.get) {
+        const r = await window.storage.get(key, true);
+        if (r && r.value != null) return r.value;
+      }
+    } catch(err){}
+
     return null;
   },
 
   async listRemoteKeys(prefix) {
+    const cleanPrefix = String(prefix || '').trim().toLowerCase();
     const keys = [];
-    try {
-      const url = `${this.baseUrl}/kv.json?shallow=true`;
-      const res = await fetch(url, { method: 'GET' });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && typeof data === 'object') {
-          const cleanPrefix = String(prefix || '').replace(/[^a-zA-Z0-9_\-]/g, '_');
-          Object.keys(data).forEach(k => {
-            if (k.startsWith(cleanPrefix)) keys.push(k);
-          });
-        }
-      }
-    } catch(e) {}
+    const map = this.getCloudMap();
+    Object.keys(map).forEach(k => {
+      if (k.startsWith(cleanPrefix)) keys.push(k);
+    });
     return keys;
   },
+
+  // ==================================================================
+  // FULL ACCOUNT & USER STATE CLOUD SYNC (Single Source of Truth)
+  // ==================================================================
 
   async saveAccount(account) {
     if (!account || !account.loginId) return;
     const normId = normLoginId(account.loginId);
 
-    // 1. Update local storage
+    // 1. Update local accounts list cache
     const arr = getAccounts();
     const idx = arr.findIndex(a => normLoginId(a.loginId) === normId || a.userId === account.userId);
     if (idx >= 0) arr[idx] = { ...arr[idx], ...account };
     else arr.push(account);
     saveAccounts(arr);
 
-    // 2. Sync to Cloud Remote DB
+    // 2. Save account record remotely to Cloud DB
     const jsonStr = JSON.stringify(account);
     await this.setRemoteKey(`acct_login_${normId}`, jsonStr);
     await this.setRemoteKey(`acct_user_${account.userId}`, jsonStr);
 
-    try {
-      const cloudAccountsStr = (await this.getRemoteKey('all_accounts')) || '[]';
-      let cloudArr = [];
-      try { cloudArr = JSON.parse(cloudAccountsStr); } catch(e){}
-      const cIdx = cloudArr.findIndex(a => normLoginId(a.loginId) === normId);
-      if (cIdx >= 0) cloudArr[cIdx] = account;
-      else cloudArr.push(account);
-      await this.setRemoteKey('all_accounts', JSON.stringify(cloudArr));
-    } catch(e){}
+    // Also push complete user state bundle
+    await this.pushUserState(account.userId, normId);
   },
 
   async fetchAccount(loginId) {
     if (!loginId) return null;
     const normId = normLoginId(loginId);
 
-    // 1. Check local cache
-    let local = getAccounts().find(a => normLoginId(a.loginId) === normId);
-    if (local) return local;
-
-    // 2. Fetch from Cloud DB by login key
+    // 1. Try Cloud DB Remote Store FIRST for latest authoritative account data
     try {
       const remoteStr = await this.getRemoteKey(`acct_login_${normId}`);
       if (remoteStr) {
         const remote = JSON.parse(remoteStr);
         if (remote && remote.userId) {
           const arr = getAccounts();
-          if (!arr.find(a => a.userId === remote.userId)) {
-            arr.push(remote);
-            saveAccounts(arr);
-          }
+          const idx = arr.findIndex(a => normLoginId(a.loginId) === normId || a.userId === remote.userId);
+          if (idx >= 0) arr[idx] = { ...arr[idx], ...remote };
+          else arr.push(remote);
+          saveAccounts(arr);
           return remote;
         }
       }
     } catch(e){}
 
-    // 3. Fallback: Search all_accounts in cloud
-    try {
-      const allStr = await this.getRemoteKey('all_accounts');
-      if (allStr) {
-        const cloudArr = JSON.parse(allStr);
-        const matched = cloudArr.find(a => normLoginId(a.loginId) === normId);
-        if (matched) {
-          const arr = getAccounts();
-          if (!arr.find(a => a.userId === matched.userId)) {
-            arr.push(matched);
-            saveAccounts(arr);
-          }
-          return matched;
-        }
-      }
-    } catch(e){}
-
-    return null;
+    // 2. Local Cache Fallback
+    let local = getAccounts().find(a => normLoginId(a.loginId) === normId);
+    return local || null;
   },
 
-  async syncUserData(userId) {
+  async pushUserState(userId, loginId) {
     if (!userId) return;
+    const normId = loginId ? normLoginId(loginId) : (findAccountByUserId(userId)?.loginId || '');
+
     try {
-      const progressKeys = await this.listRemoteKeys(`lvlprog_${userId}_`);
-      for (const pk of progressKeys) {
-        const raw = await this.getRemoteKey(pk);
-        if (raw) {
-          try {
-            const keyParts = pk.split('_');
-            const chapterId = keyParts[keyParts.length - 1];
-            const localKey = `lvlprog:${userId}:${chapterId}`;
-            localStorage.setItem(localKey, raw);
-          } catch(e){}
+      // Gather all level progress keys for this user
+      const levelProgress = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(`lvlprog:${userId}:`)) {
+          levelProgress[k] = localStorage.getItem(k);
         }
       }
-    } catch(e){}
+
+      // Gather user quiz attempts
+      const allAttempts = await fetchAllAttempts();
+      const userAttempts = allAttempts.filter(a => a.userId === userId);
+
+      // Account profile
+      const account = findAccountByUserId(userId) || getCurrentUser();
+
+      const userBundle = {
+        account,
+        levelProgress,
+        attempts: userAttempts,
+        updatedAt: Date.now()
+      };
+
+      const bundleStr = JSON.stringify(userBundle);
+      await this.setRemoteKey(`ubundle_${userId}`, bundleStr);
+      if (normId) await this.setRemoteKey(`ubundle_login_${normId}`, bundleStr);
+    } catch(e) {
+      console.warn('Error pushing user state to cloud:', e);
+    }
+  },
+
+  async fetchAndHydrateUserState(userId, loginId) {
+    if (!userId && !loginId) return null;
+    const normId = loginId ? normLoginId(loginId) : '';
+
+    try {
+      // 1. Fetch remote user bundle by userId or loginId
+      let remoteBundleStr = userId ? await this.getRemoteKey(`ubundle_${userId}`) : null;
+      if (!remoteBundleStr && normId) {
+        remoteBundleStr = await this.getRemoteKey(`ubundle_login_${normId}`);
+      }
+
+      if (remoteBundleStr) {
+        const bundle = JSON.parse(remoteBundleStr);
+        if (bundle) {
+          // Restore Account Profile
+          if (bundle.account && bundle.account.userId) {
+            const arr = getAccounts();
+            const idx = arr.findIndex(a => a.userId === bundle.account.userId || normLoginId(a.loginId) === normLoginId(bundle.account.loginId));
+            if (idx >= 0) arr[idx] = { ...arr[idx], ...bundle.account };
+            else arr.push(bundle.account);
+            saveAccounts(arr);
+
+            if (state.userId === bundle.account.userId || state.userId === userId) {
+              state.grade = bundle.account.grade || state.grade;
+              state.username = bundle.account.displayName || state.username;
+              setCurrentUser(bundle.account);
+            }
+          }
+
+          // Restore Level Progress
+          if (bundle.levelProgress && typeof bundle.levelProgress === 'object') {
+            Object.entries(bundle.levelProgress).forEach(([k, val]) => {
+              if (k && val) {
+                try {
+                  const existingLocal = localStorage.getItem(k);
+                  if (!existingLocal) {
+                    localStorage.setItem(k, val);
+                  } else {
+                    // Safe merge: take highest completed levels
+                    const localObj = JSON.parse(existingLocal);
+                    const remoteObj = JSON.parse(val);
+                    const mergedLevels = Array.from(new Set([...(localObj.completedLevels||[]), ...(remoteObj.completedLevels||[])]));
+                    const mergedScores = { ...(localObj.bestScores||{}), ...(remoteObj.bestScores||{}) };
+                    localStorage.setItem(k, JSON.stringify({ completedLevels: mergedLevels, bestScores: mergedScores }));
+                  }
+                } catch(err){}
+              }
+            });
+          }
+
+          // Restore Quiz Attempts
+          if (Array.isArray(bundle.attempts)) {
+            const idx = JSON.parse(localStorage.getItem('canopy_attempt_keys') || '[]');
+            bundle.attempts.forEach(att => {
+              if (att && att.ts) {
+                const key = `attempt:${att.userId}:${att.ts}`;
+                const rec = JSON.stringify(att);
+                localStorage.setItem(key, rec);
+                if (!idx.includes(key)) idx.push(key);
+              }
+            });
+            localStorage.setItem('canopy_attempt_keys', JSON.stringify(idx));
+          }
+
+          return bundle;
+        }
+      }
+    } catch(e) {
+      console.warn('Error hydrating user state from cloud:', e);
+    }
+    return null;
   }
 };
 
@@ -1147,7 +1251,7 @@ async function saveAttempt(userId,displayName,chapterId,levelIndex,score,total,x
   const record=JSON.stringify({userId,displayName,grade:state.grade,subject:state.subject,cat:chapterId,level:levelIndex,score,total,xp:xpEarned,ts:now});
   /* Primary: platform storage (shared/multi-user) */
   await setShared(key,record);
-  try{await CloudAuthSync.setRemoteKey(key,record);}catch(e){}
+  try{await CloudAuthSync.setRemoteKey(key,record);await CloudAuthSync.pushUserState(userId);}catch(e){}
   /* Fallback: localStorage (persists across refresh/close in any browser) */
   try{
     localStorage.setItem(key,record);
@@ -1242,7 +1346,7 @@ async function saveLevelProgress(chapterId,progress){
   const data = JSON.stringify(progress);
   try{await window.storage.set(newKey,data,false);}catch(e){}
   try{localStorage.setItem(newKey,data);}catch(e){}
-  try{await CloudAuthSync.setRemoteKey(`lvlprog_${state.userId}_${chapterId}`, data);}catch(e){}
+  try{await CloudAuthSync.setRemoteKey(`lvlprog_${state.userId}_${chapterId}`, data);await CloudAuthSync.pushUserState(state.userId);}catch(e){}
 }
 
 /* Calculate student rank within their Grade+Board group */
@@ -2822,7 +2926,15 @@ async function init(){
     if(acct){
       state.userId=acct.userId;
       state.username=acct.displayName;
-      state.grade=acct.grade||'g11'; // Ensure they have a grade
+      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){}
+      if(acct.role === 'admin'){
+        state.grade = '';
+        state.subject = '';
+        state.chapter = '';
+        goTo('admin_dashboard');
+        return;
+      }
+      state.grade=acct.grade||''; // Ensure they have a grade
       
       const session=await loadSession(acct.userId);
       if(session){
@@ -2954,6 +3066,7 @@ function renderLogin(){
         
         state.userId=acct.userId;
         state.username=acct.displayName;
+      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){}
         state.grade=grade;
         setCurrentUser(acct);
         goTo('home');
@@ -2996,7 +3109,7 @@ function renderLogin(){
       document.getElementById('adminBtn').textContent = 'Verifying...';
       const res = await mockSecureAdminAuth(p);
       if(res.success) {
-        let acct = findAccountByLoginId('admin_master');
+        let acct = await findAccountByLoginId('admin_master');
         if(!acct) acct = createAccount('Administrator', 'admin_master', '', '', '', 'admin');
         state.userId = acct.userId;
         state.username = acct.displayName;
@@ -3057,7 +3170,7 @@ function renderLogin(){
     }
 
     let acct=await findAccountByLoginId(parsedId);
-    if(acct) try{await CloudAuthSync.syncUserData(acct.userId);}catch(e){}
+    if(acct) try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, parsedId);}catch(e){}
     if(isReg){
       const nameVal=nInput.value.trim();
       if(!nameVal)return showError("Please enter your name.");
@@ -3069,10 +3182,12 @@ function renderLogin(){
     }else{
       if(!acct)return showError("Account not found. Please check your credentials or create a new account.");
       if(acct.role === 'admin') {
-         state.userId=acct.userId; state.username=acct.displayName; setCurrentUser(acct); goTo('admin_dashboard'); return;
+         state.userId=acct.userId; state.username=acct.displayName;
+      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){} setCurrentUser(acct); goTo('admin_dashboard'); return;
       }
       state.userId=acct.userId;
       state.username=acct.displayName;
+      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){}
       state.grade=acct.grade||'';
       setCurrentUser(acct);
       
