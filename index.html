@@ -3046,7 +3046,7 @@ function renderLogin(){
       else { _authMode='register'; renderLogin(); }
     };
 
-    document.getElementById('finishRegBtn').onclick=()=>{
+    document.getElementById('finishRegBtn').onclick=async ()=>{
       errEl.style.display='none';
       const grade=document.getElementById('gradeSelect').value;
       if(!grade)return showError("Please select your Grade.");
