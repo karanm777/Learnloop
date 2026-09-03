@@ -852,6 +852,16 @@ const DEFAULT_CURRICULUM = {
     g12_eng:  { label: 'English',          glyph: '📖', hex: '#3E8FB0', chapters: [] },
     g12_acc:  { label: 'Accountancy',      glyph: '📊', hex: '#B0553E', chapters: [] },
     g12_eco:  { label: 'Economics',        glyph: '📈', hex: '#4C9A5F', chapters: [] }
+  }},
+  g13: { label: 'Grade 13 (Target / Advanced)', subjects: {
+    g13_math: { label: 'Mathematics',    glyph: '🔢', hex: '#4C9A5F', chapters: [] },
+    g13_phys: { label: 'Physics',        glyph: '⚡', hex: '#8B6FB0', chapters: [] },
+    g13_chem: { label: 'Chemistry',      glyph: '🧪', hex: '#FFB648', chapters: [] },
+    g13_bio:  { label: 'Biology',        glyph: '🧬', hex: '#3E8FB0', chapters: [] },
+    g13_cs:   { label: 'Computer Science', glyph: '💻', hex: '#E0654F', chapters: [] },
+    g13_eng:  { label: 'English',          glyph: '📖', hex: '#3E8FB0', chapters: [] },
+    g13_acc:  { label: 'Accountancy',      glyph: '📊', hex: '#B0553E', chapters: [] },
+    g13_eco:  { label: 'Economics',        glyph: '📈', hex: '#4C9A5F', chapters: [] }
   }}
 };
 
@@ -859,7 +869,8 @@ let state={screen:'splash',username:null,userId:null,grade:null,subject:null,cha
 let adminStudentFilter = { grade: '', board: '' };
 function getActiveChapter(){
   try {
-    const s = CURRICULUM[state.grade].subjects[state.subject];
+    const s = getCurriculumSubject(state.grade, state.subject);
+    if (!s) return null;
     let active = s;
     if(state.chapter && s.chapters) active = s.chapters.find(x=>x.id===state.chapter) || active;
     if(state.topic && active.topics) active = active.topics.find(x=>x.id===state.topic) || active;
@@ -1135,12 +1146,21 @@ function getAccounts(){try{return JSON.parse(localStorage.getItem('canopy_accoun
 function saveAccounts(arr){try{localStorage.setItem('canopy_accounts',JSON.stringify(arr));}catch(e){}}
 async function findAccountByLoginId(loginId){
   const n=normLoginId(loginId);
-  let acct = getAccounts().find(a=>normLoginId(a.loginId)===n);
-  if(acct) return acct;
+  // 1. Check CloudAuthSync first so newest PC/mobile data is always retrieved
   try {
     const remote = await CloudAuthSync.fetchAccount(n);
-    if(remote) return remote;
+    if(remote) {
+      if(typeof normGrade === 'function') remote.grade = normGrade(remote.grade || '');
+      return remote;
+    }
   } catch(e){}
+
+  // 2. Local accounts fallback
+  let acct = getAccounts().find(a=>normLoginId(a.loginId)===n);
+  if(acct) {
+    if(typeof normGrade === 'function') acct.grade = normGrade(acct.grade || '');
+    return acct;
+  }
   return null;
 }
 function findAccountByUserId(uid){return getAccounts().find(a=>a.userId===uid)||null;}
@@ -1154,16 +1174,31 @@ function updateAccount(userId, grade, board, school) {
   const arr=getAccounts();
   let acct=arr.find(a=>a.userId===userId);
   if(acct) {
-    acct.grade = grade || '';
+    acct.grade = typeof normGrade === 'function' ? normGrade(grade || '') : (grade || '');
     acct.board = board || '';
     acct.school = (school||'').trim();
     saveAccounts(arr);
+    try{ CloudAuthSync.saveAccount(acct); }catch(e){}
     return acct;
   }
   return null;
 }
 function getCurrentUser(){try{const r=localStorage.getItem('canopy_currentUser');return r?JSON.parse(r):null;}catch(e){return null;}}
-function setCurrentUser(acct){try{localStorage.setItem('canopy_currentUser',JSON.stringify({userId:acct.userId,displayName:acct.displayName,loginId:acct.loginId,role:acct.role||'student'}));}catch(e){}}
+function setCurrentUser(acct){
+  try {
+    if(!acct) return;
+    const g = typeof normGrade === 'function' ? normGrade(acct.grade || '') : (acct.grade || '');
+    localStorage.setItem('canopy_currentUser', JSON.stringify({
+      userId: acct.userId,
+      displayName: acct.displayName,
+      loginId: acct.loginId,
+      role: acct.role || 'student',
+      grade: g,
+      board: acct.board || '',
+      school: (acct.school || '').trim()
+    }));
+  } catch(e){}
+}
 function clearCurrentUser(){try{localStorage.removeItem('canopy_currentUser');}catch(e){}}
 
 /* Centralized logout: clear only the active session, preserve quiz progress and reports. */
@@ -1387,10 +1422,31 @@ let CURRICULUM = {};
 // ==========================================
 // NORMALIZATION HELPER FOR FILTERING
 // ==========================================
+function normGrade(g) {
+  if (!g && g !== 0) return '';
+  let s = String(g).trim().toLowerCase();
+  let m = s.match(/g?(\d+)/i);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    if (n >= 1 && n <= 13) return 'g' + n;
+  }
+  return s.startsWith('g') ? s : ('g' + s);
+}
+
+function getCurriculumGrade(gradeKey) {
+  const k = typeof normGrade === 'function' ? normGrade(gradeKey || (typeof state !== 'undefined' ? state.grade : '')) : (gradeKey || '');
+  return (typeof CURRICULUM !== 'undefined' && CURRICULUM[k]) || (typeof DEFAULT_CURRICULUM !== 'undefined' && DEFAULT_CURRICULUM[k]) || null;
+}
+
+function getCurriculumSubject(gradeKey, subjectKey) {
+  const g = getCurriculumGrade(gradeKey);
+  return (g && g.subjects) ? g.subjects[subjectKey] : null;
+}
+
 function normalizeGradeValue(val) {
   if(!val) return '';
   let s = String(val).trim().toLowerCase();
-  let numMatch = s.match(/(?:^|\s|grade|class|g)([1-9]|1[0-2])(?:st|nd|rd|th|\s|$)/i);
+  let numMatch = s.match(/(?:^|\s|grade|class|g)([1-9]|1[0-3])(?:st|nd|rd|th|\s|$)/i);
   if (numMatch) return 'grade ' + numMatch[1];
   return s.replace(/\s+/g, ' ');
 }
@@ -2906,7 +2962,6 @@ async function init(){
     if(acct){
       state.userId=acct.userId;
       state.username=acct.displayName;
-      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){}
       if(acct.role === 'admin'){
         state.grade = '';
         state.subject = '';
@@ -2914,7 +2969,16 @@ async function init(){
         goTo('admin_dashboard');
         return;
       }
-      state.grade=acct.grade||''; // Ensure they have a grade
+      let bundle = null;
+      try{ bundle = await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId); }catch(e){}
+      const activeGrade = normGrade((bundle && bundle.account && bundle.account.grade) || acct.grade || '');
+      state.grade = activeGrade;
+      acct.grade = activeGrade;
+      setCurrentUser(acct);
+      if(!activeGrade || !(CURRICULUM[activeGrade] || DEFAULT_CURRICULUM[activeGrade])){
+        goTo('migrate_grade');
+        return;
+      }
       
       const session=await loadSession(acct.userId);
       if(session){
@@ -2955,7 +3019,7 @@ function renderScreen(key){
     const u = getCurrentUser();
     if(!u || u.role !== 'admin') {
       console.warn('Unauthorized access blocked.');
-      return renderHome();
+      return renderLogin();
     }
     if(key==='admin_dashboard') return renderAdminDashboard();
   }
@@ -2992,7 +3056,7 @@ function renderLogin(){
         <label>Grade / Class <span style="color:var(--bad);">*</span></label>
         <select id="gradeSelect" style="width:100%;padding:14px;border-radius:12px;border:1px solid var(--border);background:var(--surface);font-family:'Space Grotesk';font-size:16px;appearance:none;outline:none;">
           <option value="">Select Grade</option>
-          ${[1,2,3,4,5,6,7,8,9,10,11,12].map(g=>`<option value="g${g}" ${savedGrade===('g'+g)?'selected':''}>Grade ${g}</option>`).join('')}
+          ${[1,2,3,4,5,6,7,8,9,10,11,12,13].map(g=>`<option value="g${g}" ${normGrade(savedGrade)===('g'+g)?'selected':''}>${g===13?'Grade 13 (Advanced / Target)':'Grade '+g}</option>`).join('')}
         </select>
       </div>
       
@@ -3150,7 +3214,10 @@ function renderLogin(){
     }
 
     let acct=await findAccountByLoginId(parsedId);
-    if(acct) try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, parsedId);}catch(e){}
+    let bundle = null;
+    if(acct) {
+      try { bundle = await CloudAuthSync.fetchAndHydrateUserState(acct.userId, parsedId); } catch(e){}
+    }
     if(isReg){
       const nameVal=nInput.value.trim();
       if(!nameVal)return showError("Please enter your name.");
@@ -3162,16 +3229,34 @@ function renderLogin(){
     }else{
       if(!acct)return showError("Account not found. Please check your credentials or create a new account.");
       if(acct.role === 'admin') {
-         state.userId=acct.userId; state.username=acct.displayName;
-      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){} setCurrentUser(acct); goTo('admin_dashboard'); return;
+        state.userId=acct.userId;
+        state.username=acct.displayName;
+        state.grade='';
+        state.subject='';
+        state.chapter='';
+        setCurrentUser(acct);
+        goTo('admin_dashboard');
+        return;
       }
-      state.userId=acct.userId;
-      state.username=acct.displayName;
-      try{await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);}catch(e){}
-      state.grade=acct.grade||'';
+
+      // Merge latest cloud account data
+      if (bundle && bundle.account) {
+        acct = { ...acct, ...bundle.account };
+      }
+
+      const activeGrade = normGrade(acct.grade || (bundle && bundle.account && bundle.account.grade) || '');
+      acct.grade = activeGrade;
+      state.userId = acct.userId;
+      state.username = acct.displayName;
+      state.grade = activeGrade;
       setCurrentUser(acct);
+
+      const accounts = getAccounts();
+      const aIdx = accounts.findIndex(a => a.userId === acct.userId || normLoginId(a.loginId) === normLoginId(acct.loginId));
+      if (aIdx >= 0) accounts[aIdx] = acct; else accounts.push(acct);
+      saveAccounts(accounts);
       
-      if(!acct.grade) {
+      if(!activeGrade || !CURRICULUM[activeGrade]) {
         goTo('migrate_grade');
       } else {
         goTo('home');
@@ -3207,9 +3292,9 @@ async function renderGradeMigration() {
     </div>
   `);
   
-  document.getElementById('migSaveBtn').onclick = () => {
+  document.getElementById('migSaveBtn').onclick = async () => {
     const acct = getCurrentUser();
-    const grade = document.getElementById('migGrade').value;
+    const grade = typeof normGrade === 'function' ? normGrade(document.getElementById('migGrade').value) : document.getElementById('migGrade').value;
     
     // Update in persistent accounts list
     const arr = getAccounts();
@@ -3217,6 +3302,7 @@ async function renderGradeMigration() {
     if(fullAcct) {
       fullAcct.grade = grade;
       saveAccounts(arr);
+      try{ await CloudAuthSync.saveAccount(fullAcct); }catch(e){}
     }
     
     // Update current session
@@ -3228,9 +3314,45 @@ async function renderGradeMigration() {
 }
 
 async function renderHome(){
-  const grd=CURRICULUM[state.grade];
+  const u = getCurrentUser();
+  if(u && u.role === 'admin') {
+    goTo('admin_dashboard');
+    return;
+  }
+
+  // Resolve state.grade from all sources if not already matching a valid curriculum
+  if (!state.grade || !CURRICULUM[state.grade]) {
+    const acct = (u && u.userId) ? (findAccountByUserId(u.userId) || u) : null;
+    let candidate = normGrade(acct?.grade || state.grade || '');
+    if (candidate && (CURRICULUM[candidate] || DEFAULT_CURRICULUM[candidate])) {
+      state.grade = candidate;
+    } else if (acct && acct.userId) {
+      try {
+        const bundle = await CloudAuthSync.fetchAndHydrateUserState(acct.userId, acct.loginId);
+        const cloudGrd = normGrade(bundle?.account?.grade || '');
+        if (cloudGrd && (CURRICULUM[cloudGrd] || DEFAULT_CURRICULUM[cloudGrd])) {
+          state.grade = cloudGrd;
+          acct.grade = cloudGrd;
+          setCurrentUser(acct);
+        }
+      } catch(e){}
+    }
+  }
+
+  if (!CURRICULUM || Object.keys(CURRICULUM).length === 0) {
+    CURRICULUM = JSON.parse(JSON.stringify(DEFAULT_CURRICULUM));
+  }
+
+  const grd = CURRICULUM[state.grade] || DEFAULT_CURRICULUM[state.grade];
   if(!grd){
-    screenShell(`<div class="px" style="padding-top:16px;"><h2>No curriculum found for your grade. Please update your profile.</h2></div>`);
+    screenShell(`
+      <div class="px" style="padding-top:32px;text-align:center;">
+        <div style="font-size:48px;margin-bottom:12px;">📚</div>
+        <h2 style="font-size:20px;margin-bottom:8px;">Select Your Academic Grade</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:20px;">Your grade-specific curriculum and quizzes will be loaded instantly.</p>
+        <button class="btn full" onclick="goTo('migrate_grade')">Choose Grade Now</button>
+      </div>
+    `);
     return;
   }
   const subs=Object.keys(grd.subjects).map(k=>({...grd.subjects[k], key:k}));
@@ -3338,7 +3460,8 @@ function startSubject(subKey){
 
 async function renderChapters(){
   document.getElementById('tabbar').style.display='none';
-  const sub = CURRICULUM[state.grade].subjects[state.subject];
+  const sub = getCurriculumSubject(state.grade, state.subject);
+  if (!sub) { goTo('home'); return; }
   const subjectName = sub.label;
   
   if(!sub.chapters || sub.chapters.length===0){
@@ -3406,15 +3529,17 @@ async function renderChapters(){
 function startChapter(chKey){
   state.chapter = chKey;
   state.topic = null;
-  const sub = CURRICULUM[state.grade].subjects[state.subject];
-  const ch = sub.chapters.find(c=>c.id===chKey);
+  const sub = getCurriculumSubject(state.grade, state.subject);
+  if (!sub) { goTo('home'); return; }
+  const ch = (sub.chapters || []).find(c=>c.id===chKey);
   if(ch.topics && ch.topics.length > 0) goTo('topics');
   else goTo('levels');
 }
 
 async function renderTopics(){
   document.getElementById('tabbar').style.display='none';
-  const sub = CURRICULUM[state.grade].subjects[state.subject];
+  const sub = getCurriculumSubject(state.grade, state.subject);
+  if (!sub) { goTo('home'); return; }
   let parent = sub;
   if(state.chapter) parent = sub.chapters.find(c=>c.id===state.chapter);
   
@@ -4121,7 +4246,12 @@ async function renderProfile(){
 }
 
 function escapeHtml(str){const d=document.createElement('div');d.textContent=str;return d.innerHTML;}
-function gradeLabel(gradeKey){if(!gradeKey||!CURRICULUM[gradeKey])return gradeKey||'Unknown';return CURRICULUM[gradeKey].label;}
+function gradeLabel(gradeKey){
+  const k = typeof normGrade === 'function' ? normGrade(gradeKey) : gradeKey;
+  const curr = (typeof CURRICULUM !== 'undefined' && CURRICULUM[k]) || (typeof DEFAULT_CURRICULUM !== 'undefined' && DEFAULT_CURRICULUM[k]);
+  if(curr && curr.label) return curr.label;
+  return gradeKey || 'Unknown';
+}
 function boardOptions(gradeKey){
   const boards = new Set();
   const grade = CURRICULUM[gradeKey];
