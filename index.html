@@ -1213,6 +1213,79 @@ const CloudAuthSync = {
       console.warn('Error hydrating user state from cloud:', e);
     }
     return null;
+  },
+
+  // ==================================================================
+  // ADMIN CUSTOM QUESTIONS CLOUD PERSISTENCE
+  // ==================================================================
+
+  getLocalCustomQuestions() {
+    try {
+      return JSON.parse(localStorage.getItem('canopy_custom_questions') || '[]');
+    } catch(e) {
+      return [];
+    }
+  },
+
+  async saveCustomQuestion(q) {
+    if (!q || !q.question) return null;
+    const list = this.getLocalCustomQuestions();
+    const idx = list.findIndex(x => x.id === q.id);
+    if (idx >= 0) list[idx] = q;
+    else list.push(q);
+    try { localStorage.setItem('canopy_custom_questions', JSON.stringify(list)); } catch(e){}
+
+    await this.updateMasterRegistry(reg => {
+      if (!Array.isArray(reg.custom_questions)) reg.custom_questions = [];
+      const rIdx = reg.custom_questions.findIndex(x => x.id === q.id);
+      if (rIdx >= 0) reg.custom_questions[rIdx] = q;
+      else reg.custom_questions.push(q);
+      return reg;
+    });
+
+    try {
+      this.setRemoteKey('cq_' + q.id, JSON.stringify(q)).catch(() => {});
+    } catch(e){}
+
+    return q;
+  },
+
+  async deleteCustomQuestion(qId) {
+    if (!qId) return;
+    const list = this.getLocalCustomQuestions().filter(x => x.id !== qId);
+    try { localStorage.setItem('canopy_custom_questions', JSON.stringify(list)); } catch(e){}
+
+    await this.updateMasterRegistry(reg => {
+      if (Array.isArray(reg.custom_questions)) {
+        reg.custom_questions = reg.custom_questions.filter(x => x.id !== qId);
+      }
+      return reg;
+    });
+  },
+
+  async fetchCustomQuestions(force = false) {
+    try {
+      const reg = await this.fetchMasterRegistry(force);
+      if (reg && Array.isArray(reg.custom_questions)) {
+        try { localStorage.setItem('canopy_custom_questions', JSON.stringify(reg.custom_questions)); } catch(e){}
+        return reg.custom_questions;
+      }
+    } catch(e){}
+    return this.getLocalCustomQuestions();
+  },
+
+  getCustomQuestionsForLevel(gradeKey, subjectKey, levelIndex) {
+    const all = this.getLocalCustomQuestions();
+    const normG = typeof normGrade === 'function' ? normGrade(gradeKey) : String(gradeKey || '').toLowerCase();
+    const normSub = String(subjectKey || '').toLowerCase();
+    const lvl = Number(levelIndex) + 1;
+
+    return all.filter(q => {
+      const qG = typeof normGrade === 'function' ? normGrade(q.grade) : String(q.grade || '').toLowerCase();
+      const qSub = String(q.subject || '').toLowerCase();
+      const qLvl = Number(q.level);
+      return qG === normG && (qSub === normSub || qSub.includes(normSub) || normSub.includes(qSub)) && qLvl === lvl;
+    });
   }
 };
 
@@ -1678,8 +1751,39 @@ function ensureExactSubjectLevels(gradeKey, subjectKey, boardName) {
       question: q.question || q.q || `Question ${qIdx + 1}`,
       options: Array.isArray(q.options) ? q.options : (Array.isArray(q.o) ? q.o : ['Option A', 'Option B', 'Option C', 'Option D']),
       correctAnswer: Number(q.correctAnswer ?? q.answer ?? q.a ?? 0),
+      explanation: q.explanation || '',
       difficulty: q.difficulty || 'beginner'
     }));
+
+    // Merge custom admin questions for this grade, subject, level
+    const customList = (typeof CloudAuthSync !== 'undefined' && CloudAuthSync.getCustomQuestionsForLevel)
+      ? CloudAuthSync.getCustomQuestionsForLevel(gradeKey, subjectKey, idx)
+      : [];
+
+    const normalizedCustom = customList.map((cq, cqIdx) => ({
+      id: cq.id || `cq_${gradeKey}_${subjectKey}_L${idx + 1}_${cqIdx}`,
+      grade: grade.label || gradeKey,
+      board: safeBoard,
+      subject: subject.label,
+      level: idx + 1,
+      question: cq.question,
+      options: Array.isArray(cq.options) ? cq.options : ['Option A', 'Option B', 'Option C', 'Option D'],
+      correctAnswer: Number(cq.correctAnswer ?? 0),
+      explanation: cq.explanation || '',
+      difficulty: cq.difficulty || 'intermediate',
+      isCustom: true
+    }));
+
+    const combined = [...normalizedCustom];
+    const seenTexts = new Set(normalizedCustom.map(q => (q.question || '').trim().toLowerCase()));
+    normalizedQuestions.forEach(q => {
+      const txt = (q.question || '').trim().toLowerCase();
+      if (!seenTexts.has(txt)) {
+        seenTexts.add(txt);
+        combined.push(q);
+      }
+    });
+
     return {
       ...lvl,
       id: lvl.id || `${gradeKey}_${subjectKey}_level_${idx + 1}`,
@@ -1688,7 +1792,7 @@ function ensureExactSubjectLevels(gradeKey, subjectKey, boardName) {
       grade: grade.label || gradeKey,
       board: safeBoard,
       subject: subject.label,
-      questions: normalizedQuestions
+      questions: combined
     };
   });
   return chapter.levels;
@@ -3038,6 +3142,7 @@ async function init(){
   updateClock();renderScreen('splash');
   
   await initCurriculum();
+  try{ if(typeof CloudAuthSync !== 'undefined' && CloudAuthSync.fetchCustomQuestions) await CloudAuthSync.fetchCustomQuestions(); }catch(e){}
   
   /* Backward-compatibility: if they have the old 'username' stored but no 'canopy_currentUser', migrate them */
   const legacyName=await getPersonal('username');
@@ -3738,6 +3843,7 @@ function startLevel(levelIndex){
     q.correctAnswer = Number(q.correctAnswer ?? q.a ?? 0);
     q.o = q.options;
     q.a = q.correctAnswer;
+    q.explanation = q.explanation || '';
   });
   goTo('quiz');
 }
@@ -3776,8 +3882,17 @@ function handleAnswer(choice,q){
     if (state.timerVal >= 10) xpGain += 5; // Fast answer bonus
     state.xp += xpGain;
   }
+  if(q.explanation){
+    const expBox = document.createElement('div');
+    expBox.id = 'qExplanationBox';
+    expBox.style.cssText = 'margin-top:14px;padding:12px 16px;background:var(--surface-2);border-radius:12px;font-size:13px;line-height:1.4;border-left:4px solid var(--primary);animation:fadeIn 0.3s ease;';
+    expBox.innerHTML = '<strong>💡 Explanation:</strong> ' + escapeHtml(q.explanation);
+    const optWrap = document.getElementById('optionsWrap');
+    if (optWrap && optWrap.parentNode) optWrap.parentNode.insertBefore(expBox, optWrap.nextSibling);
+  }
   const totalQs = (state.activeQuestions && state.activeQuestions.length) ? state.activeQuestions.length : 10;
-  setTimeout(()=>{if(state.qIndex < totalQs - 1){state.qIndex++;state.answered=false;renderQuiz();}else{finishQuiz();}},700);
+  const delay = q.explanation ? 1500 : 700;
+  setTimeout(()=>{if(state.qIndex < totalQs - 1){state.qIndex++;state.answered=false;renderQuiz();}else{finishQuiz();}}, delay);
 }
 
 async function finishQuiz(){
@@ -4373,6 +4488,7 @@ async function renderAdminDashboard() {
       <button class="pill ${adminTab==='overview'?'active':''}" onclick="adminTab='overview';renderAdminDashboard()">Overview</button>
       <button class="pill ${adminTab==='students'?'active':''}" onclick="adminTab='students';renderAdminDashboard()">Students</button>
       <button class="pill ${adminTab==='curriculum'?'active':''}" onclick="adminTab='curriculum';renderAdminDashboard()">Curriculum</button>
+      <button class="pill ${adminTab==='add_question'?'active':''}" onclick="adminTab='add_question';renderAdminDashboard()">âž• Add Question</button>
       <button class="pill ${adminTab==='reports'?'active':''}" onclick="adminTab='reports';renderAdminDashboard()">Reports</button>
       <button class="pill" onclick="appLogout()" style="background:var(--bad);color:#fff;border:none;">Logout</button>
     </div>
@@ -4382,6 +4498,7 @@ async function renderAdminDashboard() {
   if(adminTab==='overview') contentHtml = await getAdminOverview();
   else if(adminTab==='students') contentHtml = await getAdminStudents();
   else if(adminTab==='curriculum') contentHtml = await getAdminCurriculum();
+  else if(adminTab==='add_question') contentHtml = await getAdminAddQuestion();
   else if(adminTab==='reports') contentHtml = await getAdminReports();
   
   screenShell(`
@@ -4714,6 +4831,363 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 3000);
 });
+
+// ======================================================================
+// ADMIN QUESTION MANAGEMENT MODULE (Grade 1â€“12, Subject, Chapter/Level)
+// ======================================================================
+
+let adminQSelectedGrade = 'g10';
+let adminQSelectedSubject = '';
+let adminQSelectedLevel = 0;
+
+async function getAdminAddQuestion() {
+  if (typeof CloudAuthSync !== 'undefined' && CloudAuthSync.fetchCustomQuestions) {
+    try { await CloudAuthSync.fetchCustomQuestions(); } catch(e){}
+  }
+
+  // 1) Grade options (Grade 1 through 12)
+  const gradeKeys = ['g1','g2','g3','g4','g5','g6','g7','g8','g9','g10','g11','g12'];
+  const gradeOptions = gradeKeys.map(k => {
+    const obj = (typeof CURRICULUM !== 'undefined' && CURRICULUM[k]) || (typeof DEFAULT_CURRICULUM !== 'undefined' && DEFAULT_CURRICULUM[k]);
+    const lbl = obj ? obj.label : `Grade ${k.replace('g','')}`;
+    const sel = adminQSelectedGrade === k ? 'selected' : '';
+    return `<option value="${k}" ${sel}>${escapeHtml(lbl)}</option>`;
+  }).join('');
+
+  // 2) Subject options based on selected grade
+  const currGrade = (typeof CURRICULUM !== 'undefined' && CURRICULUM[adminQSelectedGrade]) || (typeof DEFAULT_CURRICULUM !== 'undefined' && DEFAULT_CURRICULUM[adminQSelectedGrade]);
+  const subEntries = currGrade && currGrade.subjects ? Object.entries(currGrade.subjects) : [];
+  if (!adminQSelectedSubject && subEntries.length > 0) {
+    adminQSelectedSubject = subEntries[0][0];
+  } else if (subEntries.length > 0 && !subEntries.some(([k]) => k === adminQSelectedSubject)) {
+    adminQSelectedSubject = subEntries[0][0];
+  }
+
+  const subjectOptions = subEntries.map(([k, s]) => {
+    const sel = adminQSelectedSubject === k ? 'selected' : '';
+    return `<option value="${k}" ${sel}>${s.glyph || 'ðŸ“š'} ${escapeHtml(s.label)}</option>`;
+  }).join('');
+
+  // 3) Level / Chapter options
+  const currentSub = currGrade && currGrade.subjects ? currGrade.subjects[adminQSelectedSubject] : null;
+  const levelOptions = [];
+  for (let i = 0; i < 20; i++) {
+    const titleFunc = typeof getGradeLevelTitle === 'function' ? getGradeLevelTitle : (g, s, idx) => `Level ${idx + 1}`;
+    const lvlTitle = currentSub ? titleFunc(adminQSelectedGrade, currentSub.label, i) : `Level ${i + 1}`;
+    const sel = adminQSelectedLevel === i ? 'selected' : '';
+    levelOptions.push(`<option value="${i}" ${sel}>Level ${i + 1}: ${escapeHtml(lvlTitle)}</option>`);
+  }
+
+  // Fetch custom questions for this exact selection
+  const customQs = (typeof CloudAuthSync !== 'undefined' && CloudAuthSync.getCustomQuestionsForLevel)
+    ? CloudAuthSync.getCustomQuestionsForLevel(adminQSelectedGrade, adminQSelectedSubject, adminQSelectedLevel)
+    : [];
+
+  let customCardsHtml = '';
+  if (customQs.length > 0) {
+    const optLetters = ['A', 'B', 'C', 'D'];
+    customCardsHtml = customQs.map((q, qIndex) => {
+      const optsHtml = (q.options || []).map((opt, i) => {
+        const isCorrect = i === Number(q.correctAnswer);
+        const borderStyle = isCorrect ? 'border:1.5px solid var(--good);background:rgba(46,125,50,0.08);' : 'border:1px solid var(--border);';
+        const badge = isCorrect ? '<span style="color:var(--good);font-weight:700;font-size:11px;margin-left:auto;">âœ“ CORRECT</span>' : '';
+        return `<div style="display:flex;align-items:center;padding:8px 12px;border-radius:8px;font-size:13px;${borderStyle}">
+          <span style="font-weight:700;width:22px;">${optLetters[i]}.</span>
+          <span style="flex:1;">${escapeHtml(opt)}</span>
+          ${badge}
+        </div>`;
+      }).join('');
+
+      const expHtml = q.explanation ? `<div style="margin-top:10px;padding:8px 12px;background:var(--surface-2);border-radius:8px;font-size:12px;color:var(--muted);border-left:3px solid var(--primary);"><strong>Explanation:</strong> ${escapeHtml(q.explanation)}</div>` : '';
+
+      return `
+        <div style="background:var(--surface);padding:16px;border-radius:14px;border:1px solid var(--border);margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,0.03);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+            <div style="display:flex;gap:6px;align-items:center;">
+              <span style="background:var(--primary);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">CUSTOM</span>
+              <span style="font-size:12px;color:var(--muted);font-weight:600;">Question #${qIndex + 1}</span>
+            </div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn ghost" style="padding:4px 10px;font-size:12px;" onclick="adminEditQuestion('${q.id}')">âœï¸ Edit</button>
+              <button class="btn ghost" style="padding:4px 10px;font-size:12px;color:var(--bad);border-color:var(--bad);" onclick="adminDeleteQuestion('${q.id}')">ðŸ—‘ï¸ Delete</button>
+            </div>
+          </div>
+          <div style="font-weight:600;font-size:14px;margin-bottom:12px;line-height:1.4;">${escapeHtml(q.question)}</div>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            ${optsHtml}
+          </div>
+          ${expHtml}
+        </div>
+      `;
+    }).join('');
+  } else {
+    customCardsHtml = `<div style="padding:20px;text-align:center;color:var(--muted);background:var(--surface);border-radius:12px;border:1px dashed var(--border);font-size:13px;">No custom questions added for this Grade, Subject and Level yet.<br>Use the form above to add your first question!</div>`;
+  }
+
+  return `
+    <div class="px" style="padding-top:20px;padding-bottom:100px;max-width:680px;margin:0 auto;">
+      <div style="margin-bottom:16px;">
+        <h2 style="font-size:22px;margin:0 0 4px;">Add Question Module</h2>
+        <p style="color:var(--muted);font-size:13px;margin:0;">Select target section, enter question details, and publish directly to the live cloud database.</p>
+      </div>
+
+      <div id="adminQAlert" style="display:none;padding:12px 16px;border-radius:10px;margin-bottom:16px;font-size:13px;font-weight:600;"></div>
+
+      <div style="background:var(--surface);padding:20px;border-radius:16px;border:1px solid var(--border);box-shadow:0 4px 16px rgba(0,0,0,0.04);">
+        
+        <!-- 1) Select Grade -->
+        <div class="field" style="margin-bottom:14px;">
+          <label style="font-weight:700;font-size:13px;margin-bottom:4px;display:block;">1. Select Grade (Grade 1â€“12)</label>
+          <select id="adminAddGrade" onchange="adminOnGradeChange(this.value)" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            ${gradeOptions}
+          </select>
+        </div>
+
+        <!-- 2) Select Subject based on Grade -->
+        <div class="field" style="margin-bottom:14px;">
+          <label style="font-weight:700;font-size:13px;margin-bottom:4px;display:block;">2. Select Subject</label>
+          <select id="adminAddSubject" onchange="adminOnSubjectChange(this.value)" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            ${subjectOptions}
+          </select>
+        </div>
+
+        <!-- 3) Select Chapter / Level -->
+        <div class="field" style="margin-bottom:18px;">
+          <label style="font-weight:700;font-size:13px;margin-bottom:4px;display:block;">3. Select Level</label>
+          <select id="adminAddLevel" onchange="adminOnLevelChange(this.value)" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            ${levelOptions}
+          </select>
+        </div>
+
+        <div style="height:1px;background:var(--border);margin:18px 0;"></div>
+
+        <!-- 4) Enter Question -->
+        <div class="field" style="margin-bottom:16px;">
+          <label style="font-weight:700;font-size:13px;margin-bottom:4px;display:block;">4. Question Text *</label>
+          <textarea id="adminAddQText" rows="3" placeholder="Type the question prompt here..." style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;resize:vertical;"></textarea>
+        </div>
+
+        <!-- 5) Enter 4 Answer Options (A, B, C, D) -->
+        <div style="margin-bottom:16px;">
+          <label style="font-weight:700;font-size:13px;display:block;margin-bottom:8px;">5. Answer Options (A, B, C, D) *</label>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-weight:700;width:30px;height:30px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:13px;">A</span>
+              <input type="text" id="adminAddOpt0" placeholder="Option A text" style="flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-weight:700;width:30px;height:30px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:13px;">B</span>
+              <input type="text" id="adminAddOpt1" placeholder="Option B text" style="flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-weight:700;width:30px;height:30px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:13px;">C</span>
+              <input type="text" id="adminAddOpt2" placeholder="Option C text" style="flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span style="font-weight:700;width:30px;height:30px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:13px;">D</span>
+              <input type="text" id="adminAddOpt3" placeholder="Option D text" style="flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;">
+            </div>
+          </div>
+        </div>
+
+        <!-- 6) Select the Correct Answer -->
+        <div class="field" style="margin-bottom:16px;">
+          <label style="font-weight:700;font-size:13px;display:block;margin-bottom:8px;">6. Select Correct Answer *</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;" id="adminCorrectWrap">
+            <label style="display:flex;align-items:center;gap:6px;padding:10px 8px;border-radius:10px;border:1.5px solid var(--border);cursor:pointer;background:var(--bg);justify-content:center;"><input type="radio" name="adminCorrectOpt" value="0" checked> <b>A</b></label>
+            <label style="display:flex;align-items:center;gap:6px;padding:10px 8px;border-radius:10px;border:1.5px solid var(--border);cursor:pointer;background:var(--bg);justify-content:center;"><input type="radio" name="adminCorrectOpt" value="1"> <b>B</b></label>
+            <label style="display:flex;align-items:center;gap:6px;padding:10px 8px;border-radius:10px;border:1.5px solid var(--border);cursor:pointer;background:var(--bg);justify-content:center;"><input type="radio" name="adminCorrectOpt" value="2"> <b>C</b></label>
+            <label style="display:flex;align-items:center;gap:6px;padding:10px 8px;border-radius:10px;border:1.5px solid var(--border);cursor:pointer;background:var(--bg);justify-content:center;"><input type="radio" name="adminCorrectOpt" value="3"> <b>D</b></label>
+          </div>
+        </div>
+
+        <!-- 7) Optional Explanation -->
+        <div class="field" style="margin-bottom:20px;">
+          <label style="font-weight:700;font-size:13px;margin-bottom:4px;display:block;">7. Optional Explanation</label>
+          <textarea id="adminAddExplanation" rows="2" placeholder="Optional explanation shown to students after answering..." style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--bg);font-family:inherit;font-size:14px;resize:vertical;"></textarea>
+        </div>
+
+        <input type="hidden" id="adminEditQuestionId" value="">
+
+        <!-- 8) Add Question Button -->
+        <div style="display:flex;gap:12px;">
+          <button class="btn full" id="adminSubmitQBtn" onclick="adminSaveQuestion()" style="font-weight:700;font-size:15px;">âž• Add Question</button>
+          <button class="btn ghost" id="adminCancelEditBtn" onclick="adminResetQuestionForm()" style="display:none;">Cancel Edit</button>
+        </div>
+      </div>
+
+      <!-- Existing Custom Questions for this Section -->
+      <div style="margin-top:28px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3 style="font-size:16px;margin:0;">Questions in this Level (${customQs.length} Custom)</h3>
+        </div>
+        ${customCardsHtml}
+      </div>
+    </div>
+  `;
+}
+
+window.adminOnGradeChange = function(val) {
+  adminQSelectedGrade = val;
+  adminQSelectedSubject = '';
+  renderAdminDashboard();
+};
+
+window.adminOnSubjectChange = function(val) {
+  adminQSelectedSubject = val;
+  renderAdminDashboard();
+};
+
+window.adminOnLevelChange = function(val) {
+  adminQSelectedLevel = parseInt(val) || 0;
+  renderAdminDashboard();
+};
+
+window.adminResetQuestionForm = function() {
+  const editIdEl = document.getElementById('adminEditQuestionId');
+  if (editIdEl) editIdEl.value = '';
+  const qTextEl = document.getElementById('adminAddQText');
+  if (qTextEl) qTextEl.value = '';
+  for (let i = 0; i < 4; i++) {
+    const optEl = document.getElementById('adminAddOpt' + i);
+    if (optEl) optEl.value = '';
+  }
+  const expEl = document.getElementById('adminAddExplanation');
+  if (expEl) expEl.value = '';
+  const radios = document.querySelectorAll('input[name="adminCorrectOpt"]');
+  if (radios.length > 0) radios[0].checked = true;
+  const submitBtn = document.getElementById('adminSubmitQBtn');
+  if (submitBtn) submitBtn.textContent = 'âž• Add Question';
+  const cancelBtn = document.getElementById('adminCancelEditBtn');
+  if (cancelBtn) cancelBtn.style.display = 'none';
+  const alertEl = document.getElementById('adminQAlert');
+  if (alertEl) alertEl.style.display = 'none';
+};
+
+window.adminEditQuestion = function(qId) {
+  const all = (typeof CloudAuthSync !== 'undefined' && CloudAuthSync.getLocalCustomQuestions) ? CloudAuthSync.getLocalCustomQuestions() : [];
+  const q = all.find(x => x.id === qId);
+  if (!q) return toast('Question not found');
+
+  const editIdEl = document.getElementById('adminEditQuestionId');
+  if (editIdEl) editIdEl.value = q.id;
+  const qTextEl = document.getElementById('adminAddQText');
+  if (qTextEl) qTextEl.value = q.question;
+  if (Array.isArray(q.options)) {
+    for (let i = 0; i < 4; i++) {
+      const optEl = document.getElementById('adminAddOpt' + i);
+      if (optEl) optEl.value = q.options[i] || '';
+    }
+  }
+  const radios = document.querySelectorAll('input[name="adminCorrectOpt"]');
+  radios.forEach(r => {
+    r.checked = parseInt(r.value) === Number(q.correctAnswer);
+  });
+  const expEl = document.getElementById('adminAddExplanation');
+  if (expEl) expEl.value = q.explanation || '';
+  const submitBtn = document.getElementById('adminSubmitQBtn');
+  if (submitBtn) submitBtn.textContent = 'ðŸ’¾ Save Changes';
+  const cancelBtn = document.getElementById('adminCancelEditBtn');
+  if (cancelBtn) cancelBtn.style.display = 'block';
+
+  if (qTextEl) qTextEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+window.adminDeleteQuestion = async function(qId) {
+  if (!confirm('Are you sure you want to delete this question?')) return;
+  try {
+    await CloudAuthSync.deleteCustomQuestion(qId);
+    toast('Question deleted successfully');
+    renderAdminDashboard();
+  } catch(e) {
+    toast('Error deleting question');
+  }
+};
+
+window.adminSaveQuestion = async function() {
+  const alertEl = document.getElementById('adminQAlert');
+  const showAlert = (msg, isSuccess = false) => {
+    if (!alertEl) return;
+    alertEl.textContent = msg;
+    alertEl.style.display = 'block';
+    alertEl.style.background = isSuccess ? 'rgba(46,125,50,0.1)' : 'rgba(209,74,61,0.1)';
+    alertEl.style.color = isSuccess ? 'var(--good)' : 'var(--bad)';
+    alertEl.style.border = isSuccess ? '1px solid var(--good)' : '1px solid var(--bad)';
+  };
+
+  const grade = document.getElementById('adminAddGrade').value;
+  const subject = document.getElementById('adminAddSubject').value;
+  const level = parseInt(document.getElementById('adminAddLevel').value) || 0;
+  const qText = (document.getElementById('adminAddQText').value || '').trim();
+  const opt0 = (document.getElementById('adminAddOpt0').value || '').trim();
+  const opt1 = (document.getElementById('adminAddOpt1').value || '').trim();
+  const opt2 = (document.getElementById('adminAddOpt2').value || '').trim();
+  const opt3 = (document.getElementById('adminAddOpt3').value || '').trim();
+  const explanation = (document.getElementById('adminAddExplanation').value || '').trim();
+  const editId = (document.getElementById('adminEditQuestionId').value || '').trim();
+
+  // Field validation
+  if (!grade) return showAlert('Please select a Grade.');
+  if (!subject) return showAlert('Please select a Subject.');
+  if (!qText || qText.length < 5) return showAlert('Question text must be at least 5 characters long.');
+  if (!opt0 || !opt1 || !opt2 || !opt3) return showAlert('Please fill in all 4 answer options (A, B, C, D).');
+
+  const options = [opt0, opt1, opt2, opt3];
+  const uniqueOpts = new Set(options.map(o => o.toLowerCase()));
+  if (uniqueOpts.size < 4) return showAlert('All 4 answer options must be unique.');
+
+  const checkedRadio = document.querySelector('input[name="adminCorrectOpt"]:checked');
+  const correctIdx = checkedRadio ? parseInt(checkedRadio.value) : -1;
+  if (correctIdx < 0 || correctIdx > 3) return showAlert('Please select the correct answer (A, B, C, or D).');
+
+  // Check duplicate question in this grade + subject + level
+  const existingQuestions = (typeof CloudAuthSync !== 'undefined' && CloudAuthSync.getCustomQuestionsForLevel)
+    ? CloudAuthSync.getCustomQuestionsForLevel(grade, subject, level)
+    : [];
+  const isDup = existingQuestions.some(ex => ex.id !== editId && ex.question.trim().toLowerCase() === qText.toLowerCase());
+  if (isDup) return showAlert('A question with this exact text already exists in this level.');
+
+  const submitBtn = document.getElementById('adminSubmitQBtn');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Saving to Cloud...';
+  }
+
+  try {
+    const gradeObj = (typeof CURRICULUM !== 'undefined' && CURRICULUM[grade]) || (typeof DEFAULT_CURRICULUM !== 'undefined' && DEFAULT_CURRICULUM[grade]);
+    const subObj = gradeObj && gradeObj.subjects ? gradeObj.subjects[subject] : null;
+
+    const questionObj = {
+      id: editId || ('cq_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6)),
+      grade: grade,
+      gradeLabel: gradeObj ? gradeObj.label : grade,
+      subject: subject,
+      subjectLabel: subObj ? subObj.label : subject,
+      level: level + 1,
+      levelIndex: level,
+      board: 'All',
+      question: qText,
+      options: options,
+      correctAnswer: correctIdx,
+      explanation: explanation,
+      createdAt: editId ? (existingQuestions.find(x => x.id === editId)?.createdAt || Date.now()) : Date.now(),
+      updatedAt: Date.now()
+    };
+
+    await CloudAuthSync.saveCustomQuestion(questionObj);
+    toast(editId ? 'Question updated successfully!' : 'Question added successfully!');
+    adminResetQuestionForm();
+    showAlert(editId ? 'Question updated successfully!' : 'Question added successfully and saved to cloud database!', true);
+    setTimeout(() => { renderAdminDashboard(); }, 600);
+  } catch(err) {
+    showAlert('Error saving question to cloud: ' + err.message);
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = editId ? 'ðŸ’¾ Save Changes' : 'âž• Add Question';
+    }
+  }
+};
 </script>
 </body>
 </html>
